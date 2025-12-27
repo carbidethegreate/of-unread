@@ -7,6 +7,7 @@ RUN if [ -f package-lock.json ]; then npm ci; else npm install; fi
 
 FROM node:20-alpine AS build
 WORKDIR /app
+COPY package.json package-lock.json* ./
 COPY --from=deps /app/node_modules ./node_modules
 COPY tsconfig.json ./
 COPY src ./src

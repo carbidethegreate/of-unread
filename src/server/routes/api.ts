@@ -175,7 +175,7 @@ export function apiRouter() {
       }
 
       // Fetch message histories for each candidate chat.
-      const results = await mapWithConcurrency(candidateChats, 3, async (chat) => {
+      const results = await mapWithConcurrency(candidateChats, 3, async (chat): Promise<UnreadCard | null> => {
         try {
           const messages = await client.listChatMessages({
             chatId: chat.chatId,
@@ -222,24 +222,28 @@ export function apiRouter() {
 
           const timestamp = toISODate(target.createdAt) ?? new Date().toISOString();
 
-          return {
+          const from: UnreadCard["from"] = {
+            id: chat.fanId,
+            ...(chat.fanName !== undefined ? { name: chat.fanName } : {}),
+            ...(chat.fanUsername !== undefined ? { username: chat.fanUsername } : {}),
+          };
+
+          const card: UnreadCard = {
             chatId: chat.chatId,
             messageId: normalizeId(target.id) || "",
-            from: {
-              id: chat.fanId,
-              name: chat.fanName,
-              username: chat.fanUsername,
-            },
+            from,
             text: stripHtml(target.text),
             timestamp,
             latest24Messages: history,
-          } satisfies UnreadCard;
+          };
+
+          return card;
         } catch {
           return null;
         }
       });
 
-      const data = results.filter((x): x is UnreadCard => Boolean(x));
+      const data = results.filter((x): x is UnreadCard => x !== null);
 
       // Sort newest first.
       data.sort((a, b) => {
