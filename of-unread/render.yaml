@@ -1,7 +1,0 @@
-services:
-  - type: web
-    name: of-unread
-    env: docker
-    plan: starter
-    autoDeploy: true
-    healthCheckPath: /healthz
