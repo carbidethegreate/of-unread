@@ -1,5 +1,6 @@
 const elAccountId = document.getElementById("accountId");
 const btnLoad = document.getElementById("btnLoad");
+const btnDraftAll = document.getElementById("btnDraftAll");
 const btnSendAll = document.getElementById("btnSendAll");
 const daysInput = document.getElementById("daysInput");
 const topStatus = document.getElementById("topStatus");
@@ -14,6 +15,10 @@ const listOptions = [
 /** @type {Map<string, any>} */
 const cardUiMap = new Map();
 
+const MIN_REQUEST_GAP_MS = 1000;
+const lastRequestAt = new Map();
+const inFlightKeys = new Set();
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -23,31 +28,84 @@ function setTopStatus(message) {
 }
 
 async function apiJson(path, options = {}) {
-  const res = await fetch(path, {
-    method: options.method || "GET",
-    headers: {
-      "Content-Type": "application/json",
-      ...(options.headers || {})
-    },
-    body: options.body ? JSON.stringify(options.body) : undefined
-  });
+  const method = options.method || "GET";
+  const key = `${method.toUpperCase()} ${path}`;
 
-  const text = await res.text();
-  let payload = null;
-  try {
-    payload = text ? JSON.parse(text) : null;
-  } catch {
-    payload = text;
+  const last = lastRequestAt.get(key) ?? 0;
+  const elapsed = Date.now() - last;
+  if (elapsed < MIN_REQUEST_GAP_MS) {
+    await sleep(MIN_REQUEST_GAP_MS - elapsed);
   }
 
-  if (!res.ok) {
-    const errMsg = payload && payload.error ? payload.error : `Request failed (${res.status})`;
-    const e = new Error(errMsg);
-    e.payload = payload;
-    e.status = res.status;
+  if (inFlightKeys.has(key)) {
+    const e = new Error("Please wait for the previous request to finish.");
+    e.status = 429;
+    e.retryAfter = 1;
     throw e;
   }
-  return payload;
+
+  inFlightKeys.add(key);
+
+  try {
+    const res = await fetch(path, {
+      method,
+      headers: {
+        "Content-Type": "application/json",
+        ...(options.headers || {})
+      },
+      body: options.body ? JSON.stringify(options.body) : undefined
+    });
+
+    const text = await res.text();
+    let payload = null;
+    try {
+      payload = text ? JSON.parse(text) : null;
+    } catch {
+      payload = text;
+    }
+
+    const retryAfterHeader = res.headers.get("retry-after");
+    let retryAfterSec = undefined;
+    if (retryAfterHeader) {
+      const asNumber = Number.parseFloat(retryAfterHeader);
+      if (Number.isFinite(asNumber)) {
+        retryAfterSec = asNumber;
+      } else {
+        const retryDate = new Date(retryAfterHeader);
+        if (!Number.isNaN(retryDate.getTime())) {
+          retryAfterSec = Math.max(1, Math.round((retryDate.getTime() - Date.now()) / 1000));
+        }
+      }
+    }
+
+    if (!res.ok) {
+      const baseMessage = payload && payload.error ? payload.error : `Request failed (${res.status})`;
+      const wait = payload?.retryAfterSec ?? retryAfterSec;
+      const message =
+        res.status === 429 && wait
+          ? `${baseMessage} Please try again in about ${wait}s.`
+          : baseMessage;
+      const e = new Error(message);
+      e.payload = payload;
+      e.status = res.status;
+      e.retryAfter = wait;
+      throw e;
+    }
+
+    return payload;
+  } finally {
+    lastRequestAt.set(key, Date.now());
+    inFlightKeys.delete(key);
+  }
+}
+
+function formatErrorMessage(e, fallback) {
+  if (!e) return fallback;
+  if (e.status === 429) {
+    const wait = e.retryAfter ?? 1;
+    return `${e.message || "Rate limit reached."} Please wait ${wait}s before retrying.`;
+  }
+  return e.message || fallback;
 }
 
 function formatTimestamp(iso) {
@@ -306,7 +364,7 @@ async function handleDraft(ui) {
     badge(ui.draftBadge, "ready", "good");
   } catch (e) {
     badge(ui.draftBadge, "error", "bad");
-    showError(ui, e.message || "Failed to generate draft");
+    showError(ui, formatErrorMessage(e, "Failed to generate draft"));
   } finally {
     ui.btnDraft.disabled = false;
   }
@@ -358,7 +416,7 @@ async function handleSend(ui) {
   } catch (e) {
     badge(ui.sendBadge, "failed", "bad");
     badge(ui.listBadge, "error", "bad");
-    showError(ui, e.message || "Send failed");
+    showError(ui, formatErrorMessage(e, "Send failed"));
   } finally {
     ui.btnSend.disabled = false;
   }
@@ -368,6 +426,7 @@ async function loadUnread() {
   clearCards();
   setTopStatus("Loading unread messages...");
   btnLoad.disabled = true;
+  btnDraftAll.disabled = true;
   btnSendAll.disabled = true;
 
   const days = daysInput.value || "10";
@@ -384,10 +443,41 @@ async function loadUnread() {
     }
 
     setTopStatus(`Loaded ${cards.length} unread message(s).`);
+    btnDraftAll.disabled = false;
     btnSendAll.disabled = false;
   } catch (e) {
-    setTopStatus(e.message || "Failed to load unread messages");
+    setTopStatus(formatErrorMessage(e, "Failed to load unread messages"));
+    btnDraftAll.disabled = true;
   } finally {
+    btnLoad.disabled = false;
+  }
+}
+
+async function requestDraftAll() {
+  const uis = Array.from(cardUiMap.values());
+  if (uis.length === 0) {
+    setTopStatus("No unread messages loaded. Click Get Unread Messages first.");
+    return;
+  }
+
+  btnDraftAll.disabled = true;
+  btnSendAll.disabled = true;
+  btnLoad.disabled = true;
+
+  setTopStatus(`Requesting drafts for ${uis.length} message(s)...`);
+
+  try {
+    let drafted = 0;
+    for (const ui of uis) {
+      await handleDraft(ui);
+      drafted += 1;
+      setTopStatus(`Drafted ${drafted} of ${uis.length}`);
+    }
+
+    setTopStatus(`Drafts ready for ${uis.length} message(s).`);
+  } finally {
+    btnDraftAll.disabled = false;
+    btnSendAll.disabled = false;
     btnLoad.disabled = false;
   }
 }
@@ -402,6 +492,7 @@ async function sendAll() {
   }
 
   btnSendAll.disabled = true;
+  btnDraftAll.disabled = true;
   btnLoad.disabled = true;
 
   setTopStatus(`Sending ${toSend.length} message(s)...`);
@@ -412,12 +503,13 @@ async function sendAll() {
     sent += 1;
     setTopStatus(`Sent ${sent} of ${toSend.length}`);
 
-    // Gentle rate limit: about 2.5 requests per second.
-    await sleep(400);
+    // Gentle rate limit: at least one second between sends.
+    await sleep(1000);
   }
 
   setTopStatus(`Finished sending ${toSend.length} message(s).`);
   btnSendAll.disabled = false;
+  btnDraftAll.disabled = false;
   btnLoad.disabled = false;
 }
 
@@ -441,6 +533,7 @@ async function init() {
   }
 
   btnLoad.addEventListener("click", loadUnread);
+  btnDraftAll.addEventListener("click", requestDraftAll);
   btnSendAll.addEventListener("click", sendAll);
 }
 
