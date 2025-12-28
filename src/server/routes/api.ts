@@ -160,9 +160,11 @@ export function apiRouter() {
       const cutoff = Date.now() - days * 24 * 60 * 60 * 1000;
 
       // Fetch chats (recent first) and stop once we hit chats with lastMessage older than cutoff.
+      // Bump pagination depth so older unread threads are reachable while still guarding against runaway scans.
       const limit = 50;
       let offset = 0;
-      const maxPages = 10; // safety
+      const maxPages = 30;
+      const maxCandidateChats = maxPages * 5; // Avoid unbounded growth when deeper pagination finds many unread threads.
 
       const candidateChats: Array<{
         chatId: string;
@@ -217,8 +219,8 @@ export function apiRouter() {
           offset += limit;
           if (chats.length < limit) break;
 
-          // Avoid unbounded growth.
-          if (candidateChats.length > 75) break;
+          // Avoid unbounded growth even when scanning deeper pagination.
+          if (candidateChats.length > maxCandidateChats) break;
         }
       } catch (err: any) {
         if (isHttpError(err)) throw err;
