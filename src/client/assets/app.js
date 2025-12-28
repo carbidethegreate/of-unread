@@ -1,5 +1,6 @@
 const elAccountId = document.getElementById("accountId");
 const btnLoad = document.getElementById("btnLoad");
+const btnDraftAll = document.getElementById("btnDraftAll");
 const btnSendAll = document.getElementById("btnSendAll");
 const daysInput = document.getElementById("daysInput");
 const topStatus = document.getElementById("topStatus");
@@ -425,6 +426,7 @@ async function loadUnread() {
   clearCards();
   setTopStatus("Loading unread messages...");
   btnLoad.disabled = true;
+  btnDraftAll.disabled = true;
   btnSendAll.disabled = true;
 
   const days = daysInput.value || "10";
@@ -441,10 +443,41 @@ async function loadUnread() {
     }
 
     setTopStatus(`Loaded ${cards.length} unread message(s).`);
+    btnDraftAll.disabled = false;
     btnSendAll.disabled = false;
   } catch (e) {
     setTopStatus(formatErrorMessage(e, "Failed to load unread messages"));
+    btnDraftAll.disabled = true;
   } finally {
+    btnLoad.disabled = false;
+  }
+}
+
+async function requestDraftAll() {
+  const uis = Array.from(cardUiMap.values());
+  if (uis.length === 0) {
+    setTopStatus("No unread messages loaded. Click Get Unread Messages first.");
+    return;
+  }
+
+  btnDraftAll.disabled = true;
+  btnSendAll.disabled = true;
+  btnLoad.disabled = true;
+
+  setTopStatus(`Requesting drafts for ${uis.length} message(s)...`);
+
+  try {
+    let drafted = 0;
+    for (const ui of uis) {
+      await handleDraft(ui);
+      drafted += 1;
+      setTopStatus(`Drafted ${drafted} of ${uis.length}`);
+    }
+
+    setTopStatus(`Drafts ready for ${uis.length} message(s).`);
+  } finally {
+    btnDraftAll.disabled = false;
+    btnSendAll.disabled = false;
     btnLoad.disabled = false;
   }
 }
@@ -459,6 +492,7 @@ async function sendAll() {
   }
 
   btnSendAll.disabled = true;
+  btnDraftAll.disabled = true;
   btnLoad.disabled = true;
 
   setTopStatus(`Sending ${toSend.length} message(s)...`);
@@ -475,6 +509,7 @@ async function sendAll() {
 
   setTopStatus(`Finished sending ${toSend.length} message(s).`);
   btnSendAll.disabled = false;
+  btnDraftAll.disabled = false;
   btnLoad.disabled = false;
 }
 
@@ -498,6 +533,7 @@ async function init() {
   }
 
   btnLoad.addEventListener("click", loadUnread);
+  btnDraftAll.addEventListener("click", requestDraftAll);
   btnSendAll.addEventListener("click", sendAll);
 }
 
